@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TranslationTool/TranslationTool.csproj" />
+  </Folder>
+</Solution>
