@@ -361,3 +361,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/models/en-zh/decoder_model.onnx
+/models/zh-en/decoder_model.onnx
