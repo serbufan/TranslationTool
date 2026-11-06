@@ -10,7 +10,7 @@
         ContentRendered="OnMiniContentRendered"
         PreviewKeyDown="OnMiniPreviewKeyDown">
 
-    <Border CornerRadius="14" Background="#FBFCFE" BorderBrush="#DCE3F0" BorderThickness="1" Margin="10">
+    <Border x:Name="MiniRoot" CornerRadius="14" Background="#FBFCFE" BorderBrush="#DCE3F0" BorderThickness="1" Margin="10">
         <Border.Effect>
             <DropShadowEffect BlurRadius="24" ShadowDepth="2" Direction="270" Opacity="0.18" Color="#0B1B3A" />
         </Border.Effect>
@@ -20,7 +20,7 @@
             <Grid Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown" Margin="0,0,0,10">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="7" Height="7" Fill="#2BB673" VerticalAlignment="Center" />
-                    <TextBlock Text="离线翻译 · Mini" FontSize="12.5" FontWeight="SemiBold" Margin="8,0,0,0"
+                    <TextBlock x:Name="MiniTitle" Text="离线翻译 · Mini" FontSize="12.5" FontWeight="SemiBold" Margin="8,0,0,0"
                                Foreground="#17203D" VerticalAlignment="Center" />
                 </StackPanel>
 
@@ -33,12 +33,12 @@
                             ToolTip="返回完整界面" />
                     <Button x:Name="CloseButton" Content="✕" Click="OnCloseClick" FontSize="11.5" Cursor="Hand"
                             Foreground="#7A849B" Background="Transparent" BorderThickness="0" Padding="8,2"
-                            ToolTip="关闭迷你窗口" />
+                            ToolTip="关闭迷你窗口，留在托盘（单击托盘图标可再次打开）" />
                 </StackPanel>
             </Grid>
 
             <!-- 输入框（置顶显示） -->
-            <Border Background="White" CornerRadius="10" Padding="12,10"
+            <Border x:Name="InputCard" Background="White" CornerRadius="10" Padding="12,10"
                     BorderBrush="#E6EAF3" BorderThickness="1">
                 <Grid>
                     <TextBox x:Name="InputBox" BorderThickness="0" Background="Transparent"
@@ -56,7 +56,7 @@
                     BorderBrush="#E6EAF3" BorderThickness="1" Visibility="Collapsed">
                 <StackPanel>
                     <Grid Margin="0,0,0,4">
-                        <TextBlock Text="译文" FontSize="11.5" Foreground="#7A849B" VerticalAlignment="Center" />
+                        <TextBlock x:Name="OutputLabel" Text="译文" FontSize="11.5" Foreground="#7A849B" VerticalAlignment="Center" />
                         <Button x:Name="CopyButton" Content="复制" Click="OnCopyClick" HorizontalAlignment="Right"
                                 FontSize="11.5" Cursor="Hand" Foreground="#2F6FED"
                                 Background="Transparent" BorderThickness="0" Padding="4,0" />
@@ -73,7 +73,7 @@
                     <Button x:Name="DirectionButton" Content="自动" Click="OnDirectionClick" FontSize="11.5" Cursor="Hand"
                             Foreground="#7A849B" Background="Transparent" BorderThickness="0" Padding="0"
                             ToolTip="点击切换翻译方向（自动 / 中→英 / 英→中）" />
-                    <TextBlock Text="·" FontSize="11.5" Foreground="#C9CFDC" Margin="6,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="DotSeparator" Text="·" FontSize="11.5" Foreground="#C9CFDC" Margin="6,0" VerticalAlignment="Center" />
                     <Button x:Name="ClearButton" Content="清空" Click="OnClearClick" FontSize="11.5" Cursor="Hand"
                             Foreground="#7A849B" Background="Transparent" BorderThickness="0" Padding="0"
                             ToolTip="清空原文与译文" />

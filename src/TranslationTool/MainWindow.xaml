@@ -28,6 +28,12 @@
             </Setter>
         </Style>
 
+        <!-- 海洋背景模式：半透明卡片，鲨鱼隐约透出 -->
+        <Style x:Key="CardBorderOnDark" TargetType="Border" BasedOn="{StaticResource CardBorder}">
+            <Setter Property="Background" Value="#D9FFFFFF" />
+            <Setter Property="Effect" Value="{x:Null}" />
+        </Style>
+
         <Style x:Key="SegmentRadio" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
             <Setter Property="FontSize" Value="13" />
@@ -109,6 +115,33 @@
             </Setter>
         </Style>
 
+        <!-- 海洋背景模式：悬浮时用深色底，白字才看得见 -->
+        <Style x:Key="GhostButtonOnDark" TargetType="Button">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="9"
+                                BorderBrush="#47556E" BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2C3A50" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="TextLinkButton" TargetType="Button">
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
             <Setter Property="FontSize" Value="12" />
@@ -155,6 +188,9 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
+        <!-- ASCII 鲨鱼海洋背景（启用设置后显示，位于所有内容之下） -->
+        <Image x:Name="OceanBackdrop" Grid.Row="0" Grid.RowSpan="4" Stretch="Fill"
+               Visibility="Collapsed" IsHitTestVisible="False" />
         <!-- 标题栏 -->
         <Grid Grid.Row="0" Margin="28,22,28,0">
             <Grid.ColumnDefinitions>
@@ -164,15 +200,13 @@
 
             <StackPanel Grid.Column="0">
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="离线翻译" FontSize="24" FontWeight="Bold"
+                    <TextBlock x:Name="TitleText" Text="离线翻译" FontSize="24" FontWeight="Bold"
                                Foreground="{StaticResource PrimaryTextBrush}" VerticalAlignment="Center" />
                     <Border Background="{StaticResource AccentSoftBrush}" CornerRadius="6" Padding="8,3"
                             Margin="10,2,0,0" VerticalAlignment="Center">
                         <TextBlock Text="本地 ONNX 推理" FontSize="11.5" Foreground="{StaticResource AccentBrush}" />
                     </Border>
                 </StackPanel>
-                <TextBlock Text="中 ⇄ 英 · 无需联网 · 文本不离开本机" FontSize="12.5" Margin="1,6,0,0"
-                           Foreground="{StaticResource SecondaryTextBrush}" />
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -209,6 +243,9 @@
                             <CheckBox x:Name="MinimizeTrayCheck" Content="最小化到系统托盘"
                                       FontSize="13" Cursor="Hand" Margin="0,8,0,0"
                                       Checked="OnMinimizeTrayChanged" Unchecked="OnMinimizeTrayChanged" />
+                            <CheckBox x:Name="OceanBackgroundCheck" Content="启用海洋背景（ASCII 鲨鱼）"
+                                      FontSize="13" Cursor="Hand" Margin="0,8,0,0"
+                                      Checked="OnOceanBackgroundChanged" Unchecked="OnOceanBackgroundChanged" />
                             <CheckBox x:Name="AutoClearCheck" Content="翻译后自动清空文本"
                                       FontSize="13" Cursor="Hand" Margin="0,8,0,0"
                                       Checked="OnAutoClearChanged" Unchecked="OnAutoClearChanged" />
@@ -218,17 +255,13 @@
                                 <ComboBox x:Name="AutoClearIntervalCombo" Width="90" Margin="8,0" FontSize="12"
                                           VerticalAlignment="Center" IsEnabled="False"
                                           SelectionChanged="OnAutoClearIntervalChanged">
+                                    <ComboBoxItem Content="5 秒" Tag="5" />
+                                    <ComboBoxItem Content="10 秒" Tag="10" />
                                     <ComboBoxItem Content="30 秒" Tag="30" />
                                     <ComboBoxItem Content="1 分钟" Tag="60" />
                                     <ComboBoxItem Content="5 分钟" Tag="300" />
-                                    <ComboBoxItem Content="10 分钟" Tag="600" />
-                                    <ComboBoxItem Content="30 分钟" Tag="1800" />
                                 </ComboBox>
-                                <TextBlock Text="内容未变则自动清空" FontSize="12" VerticalAlignment="Center"
-                                           Foreground="{StaticResource SecondaryTextBrush}" />
                             </StackPanel>
-                            <TextBlock Text="开启后，最小化窗口时将隐藏到托盘" FontSize="10.5"
-                                       Foreground="#A8B0C2" Margin="0,8,0,0" />
                         </StackPanel>
                     </Border>
                 </Popup>
@@ -236,7 +269,7 @@
         </Grid>
 
         <!-- 方向选择 -->
-        <Border Grid.Row="1" Margin="28,18,28,0" Style="{StaticResource CardBorder}" Padding="10,8">
+        <Border x:Name="DirectionCard" Grid.Row="1" Margin="28,18,28,0" Style="{StaticResource CardBorder}" Padding="10,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -269,7 +302,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Style="{StaticResource CardBorder}">
+            <Border x:Name="SourceCard" Grid.Column="0" Style="{StaticResource CardBorder}">
                 <DockPanel LastChildFill="True">
                     <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
                         <TextBlock Text="原文" FontSize="12.5" FontWeight="SemiBold"
@@ -292,7 +325,7 @@
                 </DockPanel>
             </Border>
 
-            <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <Border x:Name="TargetCard" Grid.Column="2" Style="{StaticResource CardBorder}">
                 <DockPanel LastChildFill="True">
                     <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
                         <TextBlock Text="译文" FontSize="12.5" FontWeight="SemiBold"
@@ -336,7 +369,7 @@
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                 <Button x:Name="DownloadButton" Content="下载模型" Click="OnDownloadClick"
                         Style="{StaticResource GhostButton}" Padding="16,0" Height="42" Margin="0,0,10,0"
-                        ToolTip="从 HuggingFace 下载离线模型（约 190 MB）" />
+                        ToolTip="从 HuggingFace 下载离线模型（约 350 MB）" />
                 <Button x:Name="TranslateButton" Content="翻译" Click="OnTranslateClick"
                         Style="{StaticResource PrimaryButton}" Width="132" Height="42" />
             </StackPanel>

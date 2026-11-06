@@ -20,6 +20,8 @@ public partial class MiniWindow : Window
     private CancellationTokenSource? _translateCts;
     private TranslationDirection _direction = TranslationDirection.Auto;
     private string? _lastTranslatedSource;
+    /// <summary>✕ 关闭：留在托盘并保持迷你模式（而不是切回主窗口）。</summary>
+    private bool _closeToTray;
 
     public MiniWindow(MainWindow mainWindow)
     {
@@ -33,7 +35,37 @@ public partial class MiniWindow : Window
         _autoClearTimer.Tick += OnAutoClearTick;
 
         Closed += OnMiniClosed;
+        Opacity = 0; // 首次定位完成前保持透明，避免出现在错误位置后再跳动
+        ApplyBackdrop();
         PositionAtBottomRight();
+    }
+
+    /// <summary>开启海洋背景时，迷你窗口跟随主界面改用黑色背景。</summary>
+    private void ApplyBackdrop()
+    {
+        if (!App.Settings.OceanBackground) return;
+
+        MiniRoot.Background = CreateBrush(0x05, 0x07, 0x0B);
+        MiniRoot.BorderBrush = CreateBrush(0x26, 0x31, 0x45);
+        MiniTitle.Foreground = System.Windows.Media.Brushes.White;
+        RestoreButton.Foreground = IdleBrush;
+        CloseButton.Foreground = IdleBrush;
+        DirectionButton.Foreground = IdleBrush;
+        ClearButton.Foreground = IdleBrush;
+        DotSeparator.Foreground = CreateBrush(0x3C, 0x48, 0x5E);
+
+        // 输入/译文卡片同样改为深色，文字转浅色。
+        var cardBrush = CreateBrush(0x11, 0x16, 0x20);
+        var cardBorder = CreateBrush(0x24, 0x2E, 0x3F);
+        InputCard.Background = cardBrush;
+        InputCard.BorderBrush = cardBorder;
+        OutputCard.Background = cardBrush;
+        OutputCard.BorderBrush = cardBorder;
+
+        InputBox.Foreground = System.Windows.Media.Brushes.White;
+        Placeholder.Foreground = CreateBrush(0x5C, 0x68, 0x7D);
+        OutputBox.Foreground = CreateBrush(0xE7, 0xED, 0xF8);
+        OutputLabel.Foreground = CreateBrush(0x8D, 0x9A, 0xB0);
     }
 
     private static System.Windows.Media.Brush CreateBrush(byte r, byte g, byte b)
@@ -46,14 +78,17 @@ public partial class MiniWindow : Window
     private void PositionAtBottomRight()
     {
         Rect area = SystemParameters.WorkArea;
-        Left = area.Right - Width - 28;
-        Top = area.Bottom - 320;
+        Left = Math.Max(area.Left, area.Right - Width - 28);
+        Top = Math.Max(area.Top, area.Bottom - 180);
     }
 
     private void OnMiniContentRendered(object sender, EventArgs e)
     {
+        // 内容渲染完成后才知道真实高度，此时一次性定位并显示，不会出现位置跳动。
         Rect area = SystemParameters.WorkArea;
+        Left = Math.Max(area.Left, area.Right - ActualWidth - 28);
         Top = Math.Max(area.Top, area.Bottom - ActualHeight - 28);
+        Opacity = 1;
         InputBox.Focus();
     }
 
@@ -71,7 +106,12 @@ public partial class MiniWindow : Window
     }
 
     private void OnRestoreClick(object sender, RoutedEventArgs e) => Close();
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    private void OnCloseClick(object sender, RoutedEventArgs e)
+    {
+        _closeToTray = true;
+        Close();
+    }
 
     private void OnDirectionClick(object sender, RoutedEventArgs e)
     {
@@ -238,7 +278,7 @@ public partial class MiniWindow : Window
 
         try
         {
-            _mainWindow.RestoreFromMini();
+            _mainWindow.OnMiniWindowClosed(_closeToTray);
         }
         catch
         {

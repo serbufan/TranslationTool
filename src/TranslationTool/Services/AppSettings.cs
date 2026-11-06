@@ -15,6 +15,12 @@ public sealed class AppSettings
     /// <summary>自动清空的等待秒数（默认 5 分钟）。</summary>
     public int AutoClearSeconds { get; set; } = 300;
 
+    /// <summary>启用 ASCII 鲨鱼动态海洋背景。</summary>
+    public bool OceanBackground { get; set; }
+
+    /// <summary>停止输入后自动翻译。</summary>
+    public bool AutoTranslate { get; set; }
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "OfflineTranslator",

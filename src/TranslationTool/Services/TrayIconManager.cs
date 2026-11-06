@@ -21,6 +21,8 @@ public sealed class TrayIconManager : IDisposable
 
     private readonly NotifyIcon _notifyIcon;
 
+    /// <summary>单击/双击托盘图标：由主窗口决定恢复主界面还是迷你窗口。</summary>
+    public event EventHandler? ActivateRequested;
     public event EventHandler? ShowMainRequested;
     public event EventHandler? ToggleMiniRequested;
     public event EventHandler? ExitRequested;
@@ -47,7 +49,11 @@ public sealed class TrayIconManager : IDisposable
             Visible = true,
             ContextMenuStrip = menu,
         };
-        _notifyIcon.DoubleClick += (_, _) => ShowMainRequested?.Invoke(this, EventArgs.Empty);
+        _notifyIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) ActivateRequested?.Invoke(this, EventArgs.Empty);
+        };
+        _notifyIcon.DoubleClick += (_, _) => ActivateRequested?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>生成 WPF 窗口图标（与托盘同源）。</summary>

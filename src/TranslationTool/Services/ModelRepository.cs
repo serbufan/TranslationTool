@@ -28,7 +28,8 @@ public static class ModelRepository
         new("tokenizer.json", "tokenizer.json"),
         new("generation_config.json", "generation_config.json"),
         new("encoder_model.onnx", "onnx/encoder_model_quantized.onnx"),
-        new("decoder_model.onnx", "onnx/decoder_model_quantized.onnx"),
+        // 解码器用 fp16：比 int8 动态量化在部分句子上明显更稳定
+        new("decoder_model.onnx", "onnx/decoder_model_fp16.onnx"),
     };
 
     private static readonly string[] Mirrors =

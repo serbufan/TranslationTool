@@ -1,14 +1,19 @@
-﻿using System.Windows;
+﻿using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using TranslationTool.Services;
+using TranslationTool.Services.Ocean;
 
 namespace TranslationTool;
 
 public partial class MainWindow : Window
 {
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     private static readonly Brush ReadyBrush = CreateBrush(0x2B, 0xB6, 0x73);
     private static readonly Brush WarnBrush = CreateBrush(0xE0, 0x94, 0x1F);
     private static readonly Brush ErrorBrush = CreateBrush(0xD9, 0x53, 0x4F);
@@ -17,9 +22,13 @@ public partial class MainWindow : Window
 
     private readonly DispatcherTimer _autoTimer;
     private readonly DispatcherTimer _autoClearTimer;
+    private readonly DispatcherTimer _oceanResizeTimer;
+    private OceanEngine? _oceanEngine;
 
     private TrayIconManager? _tray;
     private MiniWindow? _miniWindow;
+    /// <summary>正在使用迷你模式（含已关闭到托盘、等待从托盘恢复的情形）。</summary>
+    private bool _miniModeActive;
     private CancellationTokenSource? _translateCts;
     private CancellationTokenSource? _downloadCts;
     private bool _translating;
@@ -48,9 +57,13 @@ public partial class MainWindow : Window
         _autoClearTimer = new DispatcherTimer();
         _autoClearTimer.Tick += OnAutoClearTick;
 
+        _oceanResizeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _oceanResizeTimer.Tick += OnOceanResizeDebounced;
+
         Loaded += OnWindowLoaded;
         Closed += OnWindowClosed;
         StateChanged += OnStateChanged;
+        SizeChanged += OnWindowSizeChanged;
 
         RefreshModelStatus();
     }
@@ -79,7 +92,11 @@ public partial class MainWindow : Window
         AutoClearCheck.IsChecked = App.Settings.AutoClearEnabled;
         AutoClearIntervalCombo.IsEnabled = App.Settings.AutoClearEnabled;
         SelectAutoClearInterval(App.Settings.AutoClearSeconds);
+        OceanBackgroundCheck.IsChecked = App.Settings.OceanBackground;
+        AutoTranslateCheck.IsChecked = App.Settings.AutoTranslate;
         _applyingSettings = false;
+
+        if (App.Settings.OceanBackground) ApplyOceanBackground();
 
         bool anyReady = ModelRepository.IsReady(ModelRepository.ZhEnPair)
                         || ModelRepository.IsReady(ModelRepository.EnZhPair);
@@ -91,7 +108,7 @@ public partial class MainWindow : Window
         else
         {
             SetHeaderStatus("模型未下载", WarnBrush);
-            SetDetail("首次使用请点击“下载模型”（约 190 MB），下载完成后可完全离线使用", isError: true);
+            SetDetail("首次使用请点击“下载模型”（约 350 MB），下载完成后可完全离线使用", isError: true);
         }
     }
 
@@ -145,6 +162,7 @@ public partial class MainWindow : Window
         if (_tray is not null) return;
 
         _tray = new TrayIconManager();
+        _tray.ActivateRequested += OnTrayActivate;
         _tray.ShowMainRequested += OnTrayShowMain;
         _tray.ToggleMiniRequested += OnTrayToggleMini;
         _tray.ExitRequested += OnTrayExit;
@@ -152,17 +170,23 @@ public partial class MainWindow : Window
 
     private void OnStateChanged(object? sender, EventArgs e)
     {
-        if (WindowState != WindowState.Minimized) return;
-        if (MinimizeTrayCheck.IsChecked != true || _tray is null) return;
-
-        Hide();
-        WindowState = WindowState.Normal;
-
-        if (!_trayHintShown)
+        if (WindowState == WindowState.Minimized)
         {
-            _trayHintShown = true;
-            _tray.ShowBalloonTip("离线翻译", "已最小化到系统托盘，双击托盘图标可恢复窗口。");
+            if (MinimizeTrayCheck.IsChecked == true && _tray is not null)
+            {
+                Hide();
+                WindowState = WindowState.Normal;
+
+                if (!_trayHintShown)
+                {
+                    _trayHintShown = true;
+                    _tray.ShowBalloonTip("离线翻译", "已最小化到系统托盘，双击托盘图标可恢复窗口。");
+                }
+            }
         }
+
+        // 隐藏/最小化时暂停海洋动画，回到前台后恢复。
+        _oceanEngine?.SetRunning(IsVisible && WindowState != WindowState.Minimized);
     }
 
     private void OnSettingsClick(object sender, RoutedEventArgs e)
@@ -197,6 +221,69 @@ public partial class MainWindow : Window
         SetDetail(App.Settings.MinimizeToTray ? "最小化时将隐藏到系统托盘" : "最小化时显示在任务栏");
     }
 
+    private void OnOceanBackgroundChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _applyingSettings) return;
+
+        App.Settings.OceanBackground = OceanBackgroundCheck.IsChecked == true;
+        App.Settings.Save();
+        ApplyOceanBackground();
+    }
+
+    /// <summary>开启/关闭 ASCII 鲨鱼海洋背景。</summary>
+    private void ApplyOceanBackground()
+    {
+        bool enabled = App.Settings.OceanBackground;
+
+        if (enabled)
+        {
+            if (_oceanEngine is null)
+            {
+                _oceanEngine = new OceanEngine(OceanBackdrop);
+                _oceanEngine.Resize(ActualWidth, ActualHeight);
+            }
+            OceanBackdrop.Visibility = Visibility.Visible;
+            _oceanEngine.SetRunning(IsVisible && WindowState != WindowState.Minimized);
+        }
+        else
+        {
+            OceanBackdrop.Visibility = Visibility.Collapsed;
+            _oceanEngine?.SetRunning(false);
+        }
+
+        // 深色海洋背景上：半透明卡片让鲨鱼隐约透出，浅色文字与深色悬浮底保证可读。
+        var cardStyle = (Style)FindResource(enabled ? "CardBorderOnDark" : "CardBorder");
+        DirectionCard.Style = cardStyle;
+        SourceCard.Style = cardStyle;
+        TargetCard.Style = cardStyle;
+
+        var ghostStyle = (Style)FindResource(enabled ? "GhostButtonOnDark" : "GhostButton");
+        MiniModeButton.Style = ghostStyle;
+        SettingsButton.Style = ghostStyle;
+        DownloadButton.Style = ghostStyle;
+
+        TitleText.Foreground = enabled ? Brushes.White : (Brush)FindResource("PrimaryTextBrush");
+        var onDark = enabled ? OceanTextBrush : (Brush)FindResource("SecondaryTextBrush");
+        StatusDetail.Foreground = onDark;
+        AutoTranslateCheck.Foreground = onDark;
+    }
+
+    private static readonly Brush OceanTextBrush = new SolidColorBrush(Color.FromRgb(0xA9, 0xBA, 0xD2));
+
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // 拖拽尺寸时防抖，避免频繁重建位图与字形。
+        if (_oceanEngine is null) return;
+        _oceanResizeTimer.Stop();
+        _oceanResizeTimer.Start();
+    }
+
+    private void OnOceanResizeDebounced(object? sender, EventArgs e)
+    {
+        _oceanResizeTimer.Stop();
+        _oceanEngine?.Resize(ActualWidth, ActualHeight);
+    }
+
     private void OnAutoClearChanged(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded || _applyingSettings) return;
@@ -205,15 +292,7 @@ public partial class MainWindow : Window
         App.Settings.Save();
         AutoClearIntervalCombo.IsEnabled = App.Settings.AutoClearEnabled;
 
-        if (App.Settings.AutoClearEnabled)
-        {
-            SetDetail($"翻译后 {DescribeInterval(App.Settings.AutoClearSeconds)}内容未变将自动清空");
-        }
-        else
-        {
-            _autoClearTimer.Stop();
-            SetDetail("已关闭自动清空");
-        }
+        if (!App.Settings.AutoClearEnabled) _autoClearTimer.Stop();
     }
 
     private void OnAutoClearIntervalChanged(object sender, SelectionChangedEventArgs e)
@@ -226,7 +305,6 @@ public partial class MainWindow : Window
             App.Settings.AutoClearSeconds = seconds;
             App.Settings.Save();
             _lastTranslatedSource = null; // 间隔变化后重新计时
-            SetDetail($"自动清空间隔已设为 {DescribeInterval(seconds)}");
         }
     }
 
@@ -241,15 +319,8 @@ public partial class MainWindow : Window
             }
         }
 
-        AutoClearIntervalCombo.SelectedIndex = 2; // 默认 5 分钟
+        AutoClearIntervalCombo.SelectedIndex = 4; // 默认 5 分钟
     }
-
-    private static string DescribeInterval(int seconds) => seconds switch
-    {
-        < 60 => $"{seconds} 秒",
-        < 3600 when seconds % 60 == 0 => $"{seconds / 60} 分钟",
-        _ => $"{seconds} 秒",
-    };
 
     /// <summary>翻译成功后启动自动清空倒计时；再次翻译或修改内容会重置。</summary>
     private void RestartAutoClearTimer(string translatedSource)
@@ -275,6 +346,17 @@ public partial class MainWindow : Window
 
     private void OnMiniModeClick(object sender, RoutedEventArgs e) => EnterMiniMode();
 
+    /// <summary>
+    /// 单击/双击托盘图标：迷你窗口正开着就切回主窗口；
+    /// 否则若上次停留在迷你模式（已关闭到托盘）则重新打开迷你窗口；其余情况恢复主窗口。
+    /// </summary>
+    private void OnTrayActivate(object? sender, EventArgs e) => Dispatcher.Invoke(() =>
+    {
+        if (_miniWindow is not null) ShowMainWindow();
+        else if (_miniModeActive) EnterMiniMode();
+        else ShowMainWindow();
+    });
+
     private void OnTrayShowMain(object? sender, EventArgs e) => Dispatcher.Invoke(ShowMainWindow);
 
     private void OnTrayToggleMini(object? sender, EventArgs e) => Dispatcher.Invoke(EnterMiniMode);
@@ -287,13 +369,26 @@ public partial class MainWindow : Window
 
     private void ShowMainWindow()
     {
+        _miniModeActive = false;
         _miniWindow?.Close();
         _miniWindow = null;
 
+        RestoreMainWindow();
+    }
+
+    /// <summary>把主窗口从隐藏/最小化状态恢复到前台，并恢复背景动画。</summary>
+    private void RestoreMainWindow()
+    {
         Show();
         WindowState = WindowState.Normal;
         Activate();
+
+        // 托盘点击时进程可能不是前台进程，Windows 会忽略 Activate，这里显式置前。
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero) SetForegroundWindow(hwnd);
+
         InputBox.Focus();
+        _oceanEngine?.SetRunning(App.Settings.OceanBackground);
     }
 
     private void EnterMiniMode()
@@ -305,6 +400,8 @@ public partial class MainWindow : Window
         }
 
         _autoTimer.Stop();
+        _miniModeActive = true;
+        _oceanEngine?.SetRunning(false); // 主窗口隐藏时暂停背景动画
         var mini = new MiniWindow(this);
         _miniWindow = mini;
         Hide();
@@ -312,16 +409,25 @@ public partial class MainWindow : Window
         mini.Activate();
     }
 
-    /// <summary>由迷你窗口返回完整界面。</summary>
-    internal void RestoreFromMini()
+    /// <summary>
+    /// 迷你窗口关闭后的回调。<paramref name="closeToTray"/> 为 true 表示用户点了 ✕：
+    /// 保持迷你模式并留在托盘，下次点托盘图标重新打开迷你窗口。
+    /// </summary>
+    internal void OnMiniWindowClosed(bool closeToTray)
     {
         _miniWindow = null;
 
         if (App.IsShuttingDown || !IsLoaded) return;
 
-        Show();
-        WindowState = WindowState.Normal;
-        Activate();
+        if (closeToTray)
+        {
+            _miniModeActive = true;
+            return; // 主窗口保持隐藏
+        }
+
+        // ⤢ 主窗口：恢复完整界面（含海洋背景动画）
+        _miniModeActive = false;
+        RestoreMainWindow();
     }
 
     private void RefreshModelStatus()
@@ -354,7 +460,9 @@ public partial class MainWindow : Window
     private void SetDetail(string text, bool isError = false)
     {
         StatusDetail.Text = text;
-        StatusDetail.Foreground = isError ? ErrorBrush : SecondaryBrush;
+        StatusDetail.Foreground = isError
+            ? ErrorBrush
+            : App.Settings.OceanBackground ? OceanTextBrush : SecondaryBrush;
     }
 
     private async Task TranslateAsync()
@@ -437,7 +545,12 @@ public partial class MainWindow : Window
 
     private void OnAutoTranslateChanged(object sender, RoutedEventArgs e)
     {
-        if (AutoTranslateCheck.IsChecked == true && !_translating) RestartAutoTimer();
+        if (!IsLoaded || _applyingSettings) return;
+
+        App.Settings.AutoTranslate = AutoTranslateCheck.IsChecked == true;
+        App.Settings.Save();
+
+        if (App.Settings.AutoTranslate && !_translating) RestartAutoTimer();
     }
 
     private void OnDirectionChanged(object sender, RoutedEventArgs e)
@@ -573,6 +686,9 @@ public partial class MainWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _autoTimer.Stop();
+        _autoClearTimer.Stop();
+        _oceanResizeTimer.Stop();
+        _oceanEngine?.Dispose();
         _downloadCts?.Cancel();
         _translateCts?.Cancel();
         _tray?.Dispose();

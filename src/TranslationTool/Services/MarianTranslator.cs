@@ -17,6 +17,15 @@ public sealed class MarianTranslator : IDisposable
     /// <summary>源文本单次送入模型的最大 token 数。</summary>
     public const int MaxSourceTokens = 480;
 
+    /// <summary>禁止生成已出现过的 n-gram 长度，防止解码陷入循环。</summary>
+    public int RepeatNgramSize { get; set; } = 4;
+
+    /// <summary>Beam search 宽度。</summary>
+    public int BeamWidth { get; set; } = 4;
+
+    /// <summary>重复惩罚系数（>1 时抑制重复已生成的 token，1 表示不惩罚）。</summary>
+    public double RepetitionPenalty { get; set; } = 1.3;
+
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoder;
     private readonly HfTokenizer _tokenizer;
@@ -33,6 +42,7 @@ public sealed class MarianTranslator : IDisposable
     private readonly int _decoderStartId;
     private readonly int _padId;
     private readonly HashSet<int> _bannedIds;
+    private bool[]? _bannedFlags;
 
     private readonly bool _targetIsChinese;
 
@@ -271,52 +281,213 @@ public sealed class MarianTranslator : IDisposable
 
         using var hiddenValue = OrtValue.CreateTensorValueFromMemory(hiddenSpan.ToArray(), hiddenShape);
 
-        var generatedIds = new List<long> { _decoderStartId };
-        var outputIds = new List<int>(MaxNewTokens);
-
-        for (int step = 0; step < MaxNewTokens; step++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            using var decoderIds = OrtValue.CreateTensorValueFromMemory(
-                generatedIds.ToArray(), new long[] { 1, generatedIds.Count });
-
-            using var decoderResults = _decoder.Run(
-                runOptions,
-                new[] { _decIdsName, _decHiddenName, _decMaskName },
-                new[] { decoderIds, hiddenValue, maskValue },
-                new[] { _decLogitsName });
-
-            OrtValue logits = decoderResults[0];
-            long[] shape = logits.GetTensorTypeAndShape().Shape;
-            int vocabSize = (int)shape[^1];
-            int lastPosition = (int)shape[^2] - 1;
-            var span = logits.GetTensorDataAsSpan<float>();
-            int offset = lastPosition * vocabSize;
-
-            int bestId = -1;
-            float bestScore = float.NegativeInfinity;
-            for (int v = 0; v < vocabSize; v++)
-            {
-                if (_bannedIds.Contains(v)) continue;
-                float score = span[offset + v];
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestId = v;
-                }
-            }
-
-            if (bestId < 0 || bestId == _eosId) break;
-
-            outputIds.Add(bestId);
-            generatedIds.Add(bestId);
-        }
+        var outputIds = RunBeamSearch(hiddenValue, maskValue, runOptions, cancellationToken);
 
         if (outputIds.Count == 0) return string.Empty;
 
         string decoded = _tokenizer.Decode(outputIds.Select(id => (uint)id).ToArray());
         return decoded.Replace("<pad>", string.Empty).Replace("</s>", string.Empty).Replace("<unk>", string.Empty).Trim();
+    }
+
+    /// <summary>
+    /// Beam search 解码（宽度 <see cref="BeamWidth"/>，按平均对数概率选优），
+    /// 同时禁止生成已出现过的 n-gram，避免个别句子陷入循环。
+    /// </summary>
+    private List<int> RunBeamSearch(
+        OrtValue hiddenValue,
+        OrtValue maskValue,
+        RunOptions runOptions,
+        CancellationToken cancellationToken)
+    {
+        var beams = new List<Beam> { new(new List<long> { _decoderStartId }, 0f) };
+        var finished = new List<Beam>();
+
+        for (int step = 0; step < MaxNewTokens && beams.Count > 0; step++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var candidates = new List<Beam>(beams.Count * BeamWidth);
+
+            foreach (var beam in beams)
+            {
+                using var decoderIds = OrtValue.CreateTensorValueFromMemory(
+                    beam.Ids.ToArray(), new long[] { 1, beam.Ids.Count });
+
+                using var decoderResults = _decoder.Run(
+                    runOptions,
+                    new[] { _decIdsName, _decHiddenName, _decMaskName },
+                    new[] { decoderIds, hiddenValue, maskValue },
+                    new[] { _decLogitsName });
+
+                OrtValue logits = decoderResults[0];
+                long[] shape = logits.GetTensorTypeAndShape().Shape;
+                int vocabSize = (int)shape[^1];
+                int lastPosition = (int)shape[^2] - 1;
+                var rawSpan = logits.GetTensorDataAsSpan<float>();
+
+                EnsureBannedFlags(vocabSize);
+
+                // 需要时可对重复 token 施加惩罚，复制最后一行 logits 再处理
+                float[] row;
+                if (RepetitionPenalty > 1.0)
+                {
+                    row = rawSpan.Slice(lastPosition * vocabSize, vocabSize).ToArray();
+                    ApplyRepetitionPenalty(row, beam.Ids, RepetitionPenalty);
+                }
+                else
+                {
+                    row = rawSpan.Slice(lastPosition * vocabSize, vocabSize).ToArray();
+                }
+
+                // log-softmax 的分母
+                float max = float.NegativeInfinity;
+                for (int v = 0; v < vocabSize; v++)
+                {
+                    if (!_bannedFlags![v] && row[v] > max) max = row[v];
+                }
+
+                double sum = 0;
+                for (int v = 0; v < vocabSize; v++)
+                {
+                    if (!_bannedFlags![v]) sum += Math.Exp(row[v] - max);
+                }
+
+                float logNorm = (float)(Math.Log(sum) + max);
+
+                var chosenThisStep = new HashSet<int>();
+
+                for (int k = 0; k < BeamWidth; k++)
+                {
+                    int best = -1;
+                    float bestValue = float.NegativeInfinity;
+                    for (int v = 0; v < vocabSize; v++)
+                    {
+                        if (_bannedFlags![v] || chosenThisStep.Contains(v)) continue;
+                        float value = row[v];
+                        if (value > bestValue)
+                        {
+                            bestValue = value;
+                            best = v;
+                        }
+                    }
+
+                    if (best < 0) break;
+
+                    chosenThisStep.Add(best); // 已选过，继续选下一名
+                    float score = beam.Score + bestValue - logNorm;
+
+                    if (best == _eosId)
+                    {
+                        var doneIds = new List<long>(beam.Ids) { best };
+                        finished.Add(new Beam(doneIds, score));
+                        continue;
+                    }
+
+                    if (WouldRepeatNgram(beam.Ids, best, RepeatNgramSize)) continue;
+
+                    var nextIds = new List<long>(beam.Ids) { best };
+                    candidates.Add(new Beam(nextIds, score));
+                }
+            }
+
+            candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
+            beams = candidates.Take(BeamWidth).ToList();
+
+            // 每个 token 的对数概率 <= 0，进行中的 beam 只会更差；
+            // 当最好的已完成候选已无法被超越时提前结束
+            if (finished.Count > 0)
+            {
+                double bestFinished = finished.Max(b => b.Score / Math.Max(1, b.Ids.Count - 1));
+                double bestActive = beams.Count > 0
+                    ? beams.Max(b => b.Score / Math.Max(1, b.Ids.Count - 1))
+                    : double.NegativeInfinity;
+
+                if (bestFinished >= bestActive) break;
+            }
+        }
+
+        Beam winner;
+        if (finished.Count > 0)
+        {
+            winner = finished.MaxBy(b => b.Score / Math.Max(1, b.Ids.Count - 1))!;
+        }
+        else if (beams.Count > 0)
+        {
+            winner = beams.MaxBy(b => b.Score / Math.Max(1, b.Ids.Count - 1))!;
+        }
+        else
+        {
+            return new List<int>();
+        }
+
+        // 第一个 id 是 decoder start，末尾可能是 eos
+        return winner.Ids
+            .Skip(1)
+            .Where(id => id != _eosId)
+            .Select(id => (int)id)
+            .ToList();
+    }
+
+    private static void ApplyRepetitionPenalty(float[] row, List<long> generatedIds, double penalty)
+    {
+        var seen = new HashSet<long>(generatedIds.Skip(1));
+        foreach (long id in seen)
+        {
+            int index = (int)id;
+            if (index < 0 || index >= row.Length) continue;
+            row[index] = row[index] > 0 ? (float)(row[index] / penalty) : (float)(row[index] * penalty);
+        }
+    }
+
+    private void EnsureBannedFlags(int vocabSize)
+    {
+        if (_bannedFlags is not null && _bannedFlags.Length >= vocabSize) return;
+
+        var flags = new bool[vocabSize];
+        foreach (int id in _bannedIds)
+        {
+            if (id >= 0 && id < vocabSize) flags[id] = true;
+        }
+
+        _bannedFlags = flags;
+    }
+
+    private sealed class Beam
+    {
+        public Beam(List<long> ids, float score)
+        {
+            Ids = ids;
+            Score = score;
+        }
+
+        public List<long> Ids { get; }
+
+        /// <summary>累计对数概率（log-softmax）。</summary>
+        public float Score { get; }
+    }
+
+    /// <summary>判断把 candidate 接到序列末尾是否会重复一个已出现过的 n-gram。</summary>
+    private static bool WouldRepeatNgram(List<long> tokens, int candidate, int ngramSize)
+    {
+        int total = tokens.Count;
+        if (total < ngramSize - 1) return false;
+
+        for (int start = 0; start + ngramSize <= total; start++)
+        {
+            bool match = true;
+            for (int k = 0; k < ngramSize - 1; k++)
+            {
+                if (tokens[start + k] != tokens[total - ngramSize + 1 + k])
+                {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (match && tokens[start + ngramSize - 1] == candidate) return true;
+        }
+
+        return false;
     }
 
     private static bool NeedsSpaceBetween(StringBuilder builder, string next)
